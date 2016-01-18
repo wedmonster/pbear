@@ -1,0 +1,259 @@
+static char help[] = "Bear Query";
+
+#include <petscmat.h>
+#include <petscksp.h>
+#include <petscsys.h>
+#include <petsctime.h>
+
+#undef __FUNCT__
+#define __FUNCT__ "main"
+
+
+void loadMat(const char *path, Mat *A, PetscViewer *fd){
+    PetscErrorCode err;
+    err = PetscViewerBinaryOpen(PETSC_COMM_WORLD, path, FILE_MODE_READ, fd); 
+    err = MatCreate(PETSC_COMM_WORLD, A); 
+    err = MatSetFromOptions(*A); 
+    err = MatLoad(*A, *fd); 
+    //err = MatAssemblyBegin(*A, MAT_FINAL_ASSEMBLY);
+    //err = MatAssemblyEnd(*A, MAT_FINAL_ASSEMBLY);
+}
+
+void loadVec(const char* path, Vec* v, PetscViewer *fd){
+    PetscErrorCode err;
+    err = PetscViewerBinaryOpen(PETSC_COMM_WORLD, path, FILE_MODE_READ, fd);
+    err = VecCreate(PETSC_COMM_WORLD, v);
+    err = VecSetFromOptions(*v);
+    err = VecLoad(*v, *fd);
+}
+
+void loadIS(const char* path, IS* is, PetscViewer* fd){
+    PetscErrorCode err;
+    err = PetscViewerBinaryOpen(PETSC_COMM_WORLD, path, FILE_MODE_READ, fd);
+    err = ISCreate(PETSC_COMM_WORLD, is);
+    err = ISLoad(*is, *fd);
+}
+
+void checkMat(Mat A, const char* label){
+    int m, n;
+    PetscErrorCode err;
+    err = MatGetSize(A, &m, &n);
+    err = PetscPrintf(PETSC_COMM_WORLD, "%s size: %d %d\n", label, m, n);
+}
+
+void checkVec(Vec v, const char* label){
+    int n;
+    PetscErrorCode err;
+    err = VecGetSize(v, &n);
+    err = PetscPrintf(PETSC_COMM_WORLD, "%s size: %d\n", label, n);
+}
+
+void printSumVec(Vec v){
+    PetscErrorCode err;
+    double sum;
+    err = VecSum(v, &sum);
+    err = PetscPrintf(PETSC_COMM_WORLD, "%lf\n", sum); 
+}
+
+int main(int argc, char** args){
+
+    // 0. Declare variables
+    Mat invL1, invU1;
+    Mat invL2, invU2;
+    Mat H12, H21;
+    Vec order;
+    Vec r, q1, q2;
+    Vec t, t1, t4, r1, t5, t6;
+    Vec t2, q_tilda, t3, r2;
+    PetscErrorCode err;
+    PetscViewer fd;
+    PetscMPIInt rank, size;
+    PetscLogDouble tic, toc;
+    PetscScalar *r1_arr, *r2_arr, *o_arr;
+    PetscInt *o_idx;
+    IS is_order;
+    int n, n1, n2;
+    int *r1_idx, *r2_idx;
+    int i;
+    //int s; //0~n-1
+    PetscScalar one = 1, s;
+    PetscInt seed = 5, os; // 1~n
+    PetscScalar c;
+
+    // 1. Initialize PETSC
+    err = PetscInitialize(&argc, &args, (char *) 0, help);
+    err = MPI_Comm_size(PETSC_COMM_WORLD, &size);
+    err = MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
+    err = PetscPrintf(PETSC_COMM_WORLD, "mpi size: %d\n", size);
+    
+    // 2. Read matrices and an ordering vector
+    err = PetscPrintf(PETSC_COMM_WORLD, "Read matrices (invL1, invU1, invL2, invU2, H12, H21, order)\n");
+    loadMat("./data/invL1.dat", &invL1, &fd);
+    loadMat("./data/invU1.dat", &invU1, &fd);
+    loadMat("./data/invL2.dat", &invL2, &fd);
+    loadMat("./data/invU2.dat", &invU2, &fd);
+    loadMat("./data/H12.dat", &H12, &fd);
+    loadMat("./data/H21.dat", &H21, &fd);
+    loadVec("./data/order.dat", &order, &fd);
+    err = VecShift(order, -1);
+
+    // 2.1 Check matrices
+    checkMat(invL1, "invL1");
+    checkMat(invU1, "invU1");
+    checkMat(invL2, "invL2");
+    checkMat(invU2, "invU2");
+    checkMat(H12, "H12");
+    checkMat(H21, "H21");
+    checkVec(order, "order");
+    
+
+    // 2.2 Vec to IS 
+    err = VecGetSize(order, &n); CHKERRQ(err);
+    err = PetscMalloc(n*sizeof(PetscInt), &o_idx);CHKERRQ(err);
+    
+    err = VecGetArray(order, &o_arr);CHKERRQ(err);
+    for(i = 0; i < n; i++) o_idx[i] = (PetscInt)o_arr[i];
+    
+    err = VecRestoreArray(order, &o_arr);CHKERRQ(err);
+    err = ISCreateGeneral(PETSC_COMM_WORLD, n, o_idx, PETSC_COPY_VALUES, &is_order);CHKERRQ(err);
+    
+    // 3 Start computing a query
+    err = PetscTime(&tic);CHKERRQ(err);
+    
+    err = MatGetSize(H12, &n1, &n2);CHKERRQ(err);
+    n = n1 + n2;
+    err = PetscPrintf(PETSC_COMM_WORLD, "n1: %d, n2: %d\n", n1, n2);CHKERRQ(err);
+    
+    err = PetscMalloc(n1*sizeof(PetscInt), &r1_idx);CHKERRQ(err);
+    err = PetscMalloc(n2*sizeof(PetscInt), &r2_idx);CHKERRQ(err);
+    for(i = 0; i < n1; i++) r1_idx[i] = i;
+    for(i = 0; i < n2; i++) r2_idx[i] = i + n1;
+
+    err = VecCreate(PETSC_COMM_WORLD, &r);CHKERRQ(err);
+    err = VecSetSizes(r, PETSC_DECIDE, n);CHKERRQ(err);
+    err = VecSetType(r, VECMPI);CHKERRQ(err);
+    err = VecSetFromOptions(r);CHKERRQ(err);
+
+    err = VecCreate(PETSC_COMM_WORLD, &q1);CHKERRQ(err);
+    err = VecSetSizes(q1, PETSC_DECIDE, n1);CHKERRQ(err);
+    err = VecSetType(q1, VECMPI);CHKERRQ(err);
+    err = VecSetFromOptions(q1);CHKERRQ(err);
+    err = VecSet(q1, 0);CHKERRQ(err);
+
+    err = VecCreate(PETSC_COMM_WORLD, &q2);CHKERRQ(err);
+    err = VecSetSizes(q2, PETSC_DECIDE, n2);CHKERRQ(err);
+    err = VecSetFromOptions(q2);CHKERRQ(err);
+    err = VecSet(q2, 0);CHKERRQ(err);
+
+    seed = seed - 1; // shift
+    err = VecGetValues(order, 1, &seed, &s);CHKERRQ(err);
+    err = PetscPrintf(PETSC_COMM_WORLD, "Given seed: %d, Reordered seed: %d (0~n-1)\n", seed, (int)s);CHKERRQ(err);
+    c = 0.05;
+
+    if(s < n1){
+        os = (int) s;
+        err = VecSetValues(q1, 1, &os, &one, INSERT_VALUES); CHKERRQ(err);
+    }else{
+        os = (int)s - n1; //shift
+        err = VecSetValues(q2, 1, &os, &one, INSERT_VALUES); CHKERRQ(err);
+    }
+    err = VecAssemblyBegin(q1); CHKERRQ(err);
+    err = VecAssemblyBegin(q2); CHKERRQ(err);
+    err = VecAssemblyEnd(q2); CHKERRQ(err);
+    err = VecAssemblyEnd(q1); CHKERRQ(err);
+ 
+    //err = VecView(q2, PETSC_VIEWER_STDOUT_WORLD);
+     
+    err = VecDuplicate(q1, &t); CHKERRQ(err);
+    err = VecDuplicate(q1, &t1);     CHKERRQ(err);
+    err = VecDuplicate(q1, &t4); CHKERRQ(err);
+    err = VecDuplicate(q1, &r1); CHKERRQ(err);
+    err = VecDuplicate(q1, &t5); CHKERRQ(err);
+    err = VecDuplicate(q1, &t6); CHKERRQ(err);
+
+    err = VecDuplicate(q2, &t2); CHKERRQ(err);
+    err = VecDuplicate(q2, &q_tilda); CHKERRQ(err);
+    err = VecDuplicate(q2, &t3); CHKERRQ(err);
+    err = VecDuplicate(q2, &r2); CHKERRQ(err);
+
+
+    //printSumVec(q1);
+    //printSumVec(q2);
+    //err = PetscPrintf(PETSC_COMM_WORLD, "Mat-vec mul start.\n");
+    err = MatMult(invL1, q1, t); CHKERRQ(err);
+    err = MatMult(invU1, t, t1); CHKERRQ(err);
+    err = MatMult(H21, t1, t2); CHKERRQ(err);
+    err = VecAXPBYPCZ(q_tilda, 1.0, -1.0, 0.0, q2, t2); CHKERRQ(err);
+    
+    err = MatMult(invL2, q_tilda, t3); CHKERRQ(err);
+    err = MatMult(invU2, t3, r2); CHKERRQ(err);
+    
+    //printSumVec(r2);
+    
+    err = MatMult(H12, r2, t5); CHKERRQ(err);
+    err = VecAXPBYPCZ(t4, 1.0, -1.0, 0.0, q1, t5); CHKERRQ(err);
+    err = MatMult(invL1, t4, t6); CHKERRQ(err);
+    err = MatMult(invU1, t6, r1); CHKERRQ(err);
+  
+    //err = PetscPrintf(PETSC_COMM_WORLD, "Mat-vec mul end\n");
+    //printSumVec(r1);
+    //printSumVec(r2);
+
+    // 3.1 Concatenate two vectors [r1;r2]
+    err = VecGetArray(r1, &r1_arr); CHKERRQ(err);
+    err = VecGetArray(r2, &r2_arr); CHKERRQ(err);
+
+    err = VecSetValues(r, n1, r1_idx, r1_arr, INSERT_VALUES); CHKERRQ(err);
+    err = VecSetValues(r, n2, r2_idx, r2_arr, INSERT_VALUES); CHKERRQ(err);
+     
+    err = VecAssemblyBegin(r); CHKERRQ(err);
+    err = VecAssemblyEnd(r); CHKERRQ(err);
+
+    //err = VecView(r, PETSC_VIEWER_STDOUT_WORLD);
+    //printSumVec(r);
+
+    err = VecRestoreArray(r1, &r1_arr); CHKERRQ(err);
+    err = VecRestoreArray(r2, &r2_arr); CHKERRQ(err);
+
+    err = VecScale(r, c); CHKERRQ(err);
+   
+    // 3.2 Re-order to original space from reorderd space[slashburn]
+    err = VecPermute(r, is_order, PETSC_FALSE); CHKERRQ(err);
+    //printSumVec(r);
+    //err = VecView(r, PETSC_VIEWER_STDOUT_WORLD);
+
+    err = PetscTime(&toc); CHKERRQ(err);
+    err = PetscPrintf(PETSC_COMM_WORLD, "%f sec\n", toc-tic); CHKERRQ(err);
+
+    // n. Finalize
+    err = MatDestroy(&invL1);
+    err = MatDestroy(&invU1);
+    err = MatDestroy(&invL2);
+    err = MatDestroy(&invU2);
+    err = MatDestroy(&H12);
+    err = MatDestroy(&H21);
+    
+    err = VecDestroy(&r);
+    err = VecDestroy(&r1);
+    err = VecDestroy(&r2);
+    err = VecDestroy(&q1);
+    err = VecDestroy(&q2);
+    err = VecDestroy(&q_tilda);
+    err = VecDestroy(&t);
+    err = VecDestroy(&t1);
+    err = VecDestroy(&t2);
+    err = VecDestroy(&t3);
+    err = VecDestroy(&t4);
+    err = VecDestroy(&t5);
+    err = VecDestroy(&t6);
+
+    err = VecDestroy(&order);
+    
+    err = PetscFree(o_idx);
+    err = PetscFree(r1_idx);
+    err = PetscFree(r2_idx);
+
+    err = PetscFinalize();
+
+    return 0;
+}
