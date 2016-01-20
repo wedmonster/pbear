@@ -390,20 +390,24 @@ int main(int argc, char** args){
     err = PetscPrintf(PETSC_COMM_WORLD, "Read inputs (invL1, invU1, invL2, invU2, H12, H21, order)\n"); CHKERRQ(err);
 
     err = loadMat("./data/invL1.dat", &invL1, PETSC_COMM_WORLD, MATMPIAIJ, &fd); CHKERRQ(err);
-    err = loadMat("./data/invU1.dat", &invU1, PETSC_COMM_WORLD, MATMPIAIJ, &fd); CHKERRQ(err);
-    err = loadMat("./data/invL2.dat", &invL2, PETSC_COMM_WORLD, MATMPIAIJ, &fd); CHKERRQ(err);
-    err = loadMat("./data/invU2.dat", &invU2, PETSC_COMM_WORLD, MATMPIAIJ, &fd); CHKERRQ(err);
-    err = loadMat("./data/H12.dat", &H12, PETSC_COMM_WORLD, MATMPIAIJ, &fd); CHKERRQ(err);
-    err = loadMat("./data/H21.dat", &H21, PETSC_COMM_WORLD, MATMPIAIJ, &fd); CHKERRQ(err);
-    err = loadVec("./data/order.dat", &order, PETSC_COMM_SELF, &fd); CHKERRQ(err); //all processes must have this vector for ordering the result vector.
-
-    // Check input
     err = checkMat("invL1", invL1); CHKERRQ(err);
+    
+    err = loadMat("./data/invU1.dat", &invU1, PETSC_COMM_WORLD, MATMPIAIJ, &fd); CHKERRQ(err);
     err = checkMat("invU1", invU1); CHKERRQ(err);
+    
+    err = loadMat("./data/invL2.dat", &invL2, PETSC_COMM_WORLD, MATMPIAIJ, &fd); CHKERRQ(err);
     err = checkMat("invL2", invL2); CHKERRQ(err);
+    
+    err = loadMat("./data/invU2.dat", &invU2, PETSC_COMM_WORLD, MATMPIAIJ, &fd); CHKERRQ(err);
     err = checkMat("invU2", invU2); CHKERRQ(err);
+    
+    err = loadMat("./data/H12.dat", &H12, PETSC_COMM_WORLD, MATMPIAIJ, &fd); CHKERRQ(err);
     err = checkMat("H12", H12); CHKERRQ(err);
+    
+    err = loadMat("./data/H21.dat", &H21, PETSC_COMM_WORLD, MATMPIAIJ, &fd); CHKERRQ(err);
     err = checkMat("H21", H21); CHKERRQ(err);
+
+    err = loadVec("./data/order.dat", &order, PETSC_COMM_SELF, &fd); CHKERRQ(err); //all processes must have this vector for ordering the result vector.
     err = checkVec("order", order); CHKERRQ(err);
 
     // shift -1 for zero-based index
