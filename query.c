@@ -138,6 +138,7 @@ PetscErrorCode BearQueryMat(PetscInt s, PetscScalar c, Mat invL1, Mat invU1, Mat
     PetscInt oseed;
     PetscScalar val, one = 1.0;
     PetscMPIInt size;
+    PetscLogDouble tic, toc;
     Mat r = NULL;
     Mat r1 = NULL, q1 = NULL, t1_1 = NULL, t1_2 = NULL, t1_3 = NULL, t1_4 = NULL, t1_5 = NULL; // dimension: n1
     Mat r2 = NULL, q2 = NULL, q_tilda = NULL, t2_1 = NULL, t2_2 = NULL, t2_3 = NULL; // dimension: n2_idx
@@ -204,9 +205,12 @@ PetscErrorCode BearQueryMat(PetscInt s, PetscScalar c, Mat invL1, Mat invU1, Mat
     err = MatScale(t2_1, -1.0); CHKERRQ(err);
     err = MatAXPY(t2_1, 1.0, q2, DIFFERENT_NONZERO_PATTERN); CHKERRQ(err);
     //MatView(t1_1, PETSC_VIEWER_STDOUT_WORLD);
+    err = PetscTime(&tic);
     err = MatMatMult(invL2, t2_1, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &t2_2); CHKERRQ(err);
     err = MatMatMult(invU2, t2_2, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &r2); CHKERRQ(err);
-
+    err = PetscTime(&toc);
+    err = PetscPrintf(PETSC_COMM_WORLD, "running time: %f sec\n", toc-tic); CHKERRQ(err);
+    
     err = MatMatMult(H12, r2, MAT_INITIAL_MATRIX, PETSC_DEFAULT, &t1_3); CHKERRQ(err);
     err = MatScale(t1_3, -1.0); CHKERRQ(err);
     err = MatAXPY(t1_3, 1.0, q1, DIFFERENT_NONZERO_PATTERN); CHKERRQ(err);
