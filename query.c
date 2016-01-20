@@ -6,10 +6,11 @@ static char help[] = "Bear Query version 01";
 #include <petscsys.h>
 #include <petsctime.h>
 
-PetscErrorCode loadMat(const char *path, Mat* A, MPI_Comm comm, PetscViewer* fd){
+PetscErrorCode loadMat(const char *path, Mat* A, MPI_Comm comm, MatType type, PetscViewer* fd){
     PetscErrorCode err;
     err = PetscViewerBinaryOpen(comm, path, FILE_MODE_READ, fd); CHKERRQ(err);
     err = MatCreate(comm, A); CHKERRQ(err);
+    err = MatSetType(*A, type); CHKERRQ(err);
     err = MatSetFromOptions(*A); CHKERRQ(err);
     err = MatLoad(*A, *fd); CHKERRQ(err);
     err = PetscViewerDestroy(fd); CHKERRQ(err);
@@ -72,7 +73,7 @@ PetscErrorCode VecMerge(Vec r1, Vec r2, Vec r){
     err = VecAssemblyEnd(r); CHKERRQ(err);
     err = VecRestoreArray(r1, &r1_array); CHKERRQ(err);
     err = PetscFree(n1_idx); CHKERRQ(err);
-    
+
     err = VecGetOwnershipRange(r2, &low, &high); CHKERRQ(err);
     err = VecGetLocalSize(r2, &n2_local); CHKERRQ(err);
     err = PetscMalloc1(n2_local, &n2_idx); CHKERRQ(err);
@@ -80,10 +81,10 @@ PetscErrorCode VecMerge(Vec r1, Vec r2, Vec r){
         n2_idx[i] = low + i + n1;
     err = VecGetArray(r2, &r2_array); CHKERRQ(err);
     err = VecSetValues(r, n2_local, n2_idx, r2_array, INSERT_VALUES); CHKERRQ(err);
-    
+
     err = VecAssemblyBegin(r); CHKERRQ(err);
     err = VecAssemblyEnd(r); CHKERRQ(err);
-    
+
     //err = VecRestoreArray(r1, &r1_array); CHKERRQ(err);
     err = VecRestoreArray(r2, &r2_array); CHKERRQ(err);
     err = PetscFree(n1_idx); CHKERRQ(err);
@@ -111,72 +112,33 @@ PetscErrorCode VecReorder(Vec r, Vec order, Vec or){
         from_idx[i] = (PetscInt) low + i;
     }
     err = VecRestoreArray(order, &o_array);
-    
-    err = ISCreateGeneral(PETSC_COMM_SELF, n_local, from_idx, PETSC_COPY_VALUES, &to); CHKERRQ(err);
-    err = ISCreateGeneral(PETSC_COMM_SELF, n_local, from_idx, PETSC_COPY_VALUES, &from); CHKERRQ(err);
-   
+
+    err = ISCreateGeneral(PETSC_COMM_SELF, n_local, from_idx, PETSC_OWN_POINTER, &to); CHKERRQ(err);
+    err = ISCreateGeneral(PETSC_COMM_SELF, n_local, from_idx, PETSC_OWN_POINTER, &from); CHKERRQ(err);
+
     err = VecScatterCreate(r, from, or, to, &scatter); CHKERRQ(err);
     err = VecScatterBegin(scatter, r, or, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(err);
     err = VecScatterEnd(scatter, r, or, INSERT_VALUES, SCATTER_FORWARD); CHKERRQ(err);
-    
+
     err = PetscFree(to_idx); CHKERRQ(err);
     err = PetscFree(from_idx); CHKERRQ(err);
 
     return err;
 }
 
-int main(int argc, char** args){
+PetscErrorCode BearQuery(PetscInt s, PetscScalar c, Mat invL1, Mat invU1, Mat invL2, Mat invU2, Mat H12, Mat H21, Vec order, Vec or){
     PetscErrorCode err;
-    PetscViewer fd = NULL;
-    Mat invL1 = NULL, invU1 = NULL, invL2 = NULL, invU2 = NULL, H12 = NULL, H21 = NULL;
-    Vec order = NULL, r = NULL, or = NULL; //dimension: n: n1 + n2
+    PetscInt n1, n2, n;
+    PetscInt oseed;
+    PetscScalar val, one = 1.0;
+    Vec r = NULL;
     Vec r1 = NULL, q1 = NULL, t1_1 = NULL, t1_2 = NULL, t1_3 = NULL, t1_4 = NULL, t1_5 = NULL; // dimension: n1
     Vec r2 = NULL, q2 = NULL, q_tilda = NULL, t2_1 = NULL, t2_2 = NULL, t2_3 = NULL; // dimension: n2
 
-    PetscLogDouble tic, toc;
-    PetscInt n1, n2, n;
-    PetscMPIInt rank, size;
-    PetscInt seed, oseed;
-    PetscScalar c, val;
-    PetscScalar one = 1.0;
-
-    // Initialize PETSC and MPI
-    err = PetscInitialize(&argc, &args, (char*) 0, help); CHKERRQ(err);
-    err = MPI_Comm_size(PETSC_COMM_WORLD, &size); CHKERRQ(err);
-    err = MPI_Comm_rank(PETSC_COMM_WORLD, &rank); CHKERRQ(err);
-    err = PetscPrintf(PETSC_COMM_WORLD, "mpi size: %d\n", size); CHKERRQ(err); 
-
-    // Read matrices and an ordering vector
-    err = PetscPrintf(PETSC_COMM_WORLD, "Read inputs (invL1, invU1, invL2, invU2, H12, H21, order)\n"); CHKERRQ(err);
-
-    err = loadMat("./data/invL1.dat", &invL1, PETSC_COMM_WORLD, &fd); CHKERRQ(err);
-    err = loadMat("./data/invU1.dat", &invU1, PETSC_COMM_WORLD, &fd); CHKERRQ(err);
-    err = loadMat("./data/invL2.dat", &invL2, PETSC_COMM_WORLD, &fd); CHKERRQ(err);
-    err = loadMat("./data/invU2.dat", &invU2, PETSC_COMM_WORLD, &fd); CHKERRQ(err);
-    err = loadMat("./data/H12.dat", &H12, PETSC_COMM_WORLD, &fd); CHKERRQ(err);
-    err = loadMat("./data/H21.dat", &H21, PETSC_COMM_WORLD, &fd); CHKERRQ(err);
-    err = loadVec("./data/order.dat", &order, PETSC_COMM_SELF, &fd); CHKERRQ(err); //all processes must have this vector for ordering the result vector.
-    
-    // Check input
-    err = checkMat("invL1", invL1); CHKERRQ(err);
-    err = checkMat("invU1", invU1); CHKERRQ(err);
-    err = checkMat("invL2", invL2); CHKERRQ(err);
-    err = checkMat("invU2", invU2); CHKERRQ(err);
-    err = checkMat("H12", H12); CHKERRQ(err);
-    err = checkMat("H21", H21); CHKERRQ(err);
-    err = checkVec("order", order); CHKERRQ(err);
-
-    // shift -1 for zero-based index
-    err = VecShift(order, -1); CHKERRQ(err);
-
-
-    seed = 5; //seed is give by user on one-based index
-    c = 0.05;
-    err = PetscTime(&tic); CHKERRQ(err);
 
     err = MatGetSize(H12, &n1, &n2); CHKERRQ(err);
     n = n1 + n2;
-    err = PetscPrintf(PETSC_COMM_WORLD, "n1: %d, n2: %d\n", n1, n2); CHKERRQ(err);
+//    err = PetscPrintf(PETSC_COMM_WORLD, "n1: %d, n2: %d\n", n1, n2); CHKERRQ(err);
 
     err = VecCreateMPI(PETSC_COMM_WORLD, PETSC_DECIDE, n, &r); CHKERRQ(err);
     err = VecCreateMPI(PETSC_COMM_WORLD, PETSC_DECIDE, n1, &q1); CHKERRQ(err);
@@ -184,10 +146,10 @@ int main(int argc, char** args){
     err = VecSet(q1, 0); CHKERRQ(err);
     err = VecSet(q2, 0); CHKERRQ(err);
 
-    seed = seed - 1; // shift -1 for zero-based index
-    err = VecGetValues(order, 1, &seed, &val); CHKERRQ(err);
+    s = s - 1; // shift -1 for zero-based index
+    err = VecGetValues(order, 1, &s, &val); CHKERRQ(err);
     oseed = (PetscInt) val;
-    err = PetscPrintf(PETSC_COMM_WORLD, "Given seed: %d, Reorered seed: %d (0 ~ n-1)\n", seed, oseed); CHKERRQ(err);
+//    err = PetscPrintf(PETSC_COMM_WORLD, "Given seed: %d, Reorered seed: %d (0 ~ n-1)\n", s, oseed); CHKERRQ(err);
 
     if(oseed < n1){
         err = VecSetValues(q1, 1, &oseed, &one, INSERT_VALUES); CHKERRQ(err);
@@ -213,7 +175,171 @@ int main(int argc, char** args){
     err = VecDuplicate(q2, &t2_1); CHKERRQ(err);
     err = VecDuplicate(q2, &t2_2); CHKERRQ(err);
     err = VecDuplicate(q2, &t2_3); CHKERRQ(err);
-    
+
+    // Start matrix-vec multiplications
+    err = MatMult(invL1, q1, t1_1); CHKERRQ(err);
+    err = MatMult(invU1, t1_1, t1_2); CHKERRQ(err);
+    err = MatMult(H21, t1_2, t2_1); CHKERRQ(err);
+    err = VecAXPBYPCZ(q_tilda, 1.0, -1.0, 0.0, q2, t2_1); CHKERRQ(err);
+    err = MatMult(invL2, q_tilda, t2_2); CHKERRQ(err);
+    err = MatMult(invU2, t2_2, r2); CHKERRQ(err);
+
+    err = MatMult(H12, r2, t1_3); CHKERRQ(err);
+    err = VecAXPBYPCZ(t1_4, 1.0, -1.0, 0.0, q1, t1_3); CHKERRQ(err);
+    err = MatMult(invL1, t1_4, t1_5); CHKERRQ(err);
+    err = MatMult(invU1, t1_5, r1); CHKERRQ(err);
+    //err = printVecSum(r1); 
+
+    //err = VecView(r2, PETSC_VIEWER_STDOUT_WORLD);
+
+    // Concatenate r1 and r2
+    err = VecMerge(r1, r2, r); CHKERRQ(err);
+    err = VecScale(r, c); CHKERRQ(err);
+
+    //err = VecView(r, PETSC_VIEWER_STDOUT_WORLD);
+
+    //err = VecDuplicate(r, &or); CHKERRQ(err);
+    err = VecReorder(r, order, or); CHKERRQ(err);
+    //err = VecView(or, PETSC_VIEWER_STDOUT_WORLD);
+
+
+    err = VecDestroy(&r); CHKERRQ(err);
+    err = VecDestroy(&r1); CHKERRQ(err);
+    err = VecDestroy(&q1); CHKERRQ(err);
+    err = VecDestroy(&t1_1); CHKERRQ(err);
+    err = VecDestroy(&t1_2); CHKERRQ(err);
+    err = VecDestroy(&t1_3); CHKERRQ(err);
+    err = VecDestroy(&t1_4); CHKERRQ(err);
+    err = VecDestroy(&t1_5); CHKERRQ(err);
+
+    err = VecDestroy(&r2); CHKERRQ(err);
+    err = VecDestroy(&q2); CHKERRQ(err);
+    err = VecDestroy(&q_tilda); CHKERRQ(err);
+    err = VecDestroy(&t2_1); CHKERRQ(err);
+    err = VecDestroy(&t2_2); CHKERRQ(err);
+    err = VecDestroy(&t2_3); CHKERRQ(err);
+
+    return err;
+}
+
+int main(int argc, char** args){
+    PetscErrorCode err;
+    PetscViewer fd = NULL;
+    Mat invL1 = NULL, invU1 = NULL, invL2 = NULL, invU2 = NULL, H12 = NULL, H21 = NULL;
+    Vec order = NULL, r = NULL; //, or = NULL; //dimension: n: n1 + n2
+    Vec seeds = NULL;
+    //    Vec r1 = NULL, q1 = NULL, t1_1 = NULL, t1_2 = NULL, t1_3 = NULL, t1_4 = NULL, t1_5 = NULL; // dimension: n1
+    //    Vec r2 = NULL, q2 = NULL, q_tilda = NULL, t2_1 = NULL, t2_2 = NULL, t2_3 = NULL; // dimension: n2
+    PetscRandom rand;
+
+    PetscLogDouble tic, toc, total_time, time;
+    PetscInt n, i;
+    PetscMPIInt rank, size;
+    PetscInt seed;
+    PetscScalar c, val;
+    PetscInt QN = 100;
+
+    // Initialize PETSC and MPI
+    err = PetscInitialize(&argc, &args, (char*) 0, help); CHKERRQ(err);
+    err = MPI_Comm_size(PETSC_COMM_WORLD, &size); CHKERRQ(err);
+    err = MPI_Comm_rank(PETSC_COMM_WORLD, &rank); CHKERRQ(err);
+    err = PetscPrintf(PETSC_COMM_WORLD, "mpi size: %d\n", size); CHKERRQ(err); 
+
+    // Read matrices and an ordering vector
+    err = PetscPrintf(PETSC_COMM_WORLD, "Read inputs (invL1, invU1, invL2, invU2, H12, H21, order)\n"); CHKERRQ(err);
+
+    err = loadMat("./data/invL1.dat", &invL1, PETSC_COMM_WORLD, MATMPIBAIJ, &fd); CHKERRQ(err);
+    err = loadMat("./data/invU1.dat", &invU1, PETSC_COMM_WORLD, MATMPIBAIJ, &fd); CHKERRQ(err);
+    err = loadMat("./data/invL2.dat", &invL2, PETSC_COMM_WORLD, MATMPIBAIJ, &fd); CHKERRQ(err);
+    err = loadMat("./data/invU2.dat", &invU2, PETSC_COMM_WORLD, MATMPIBAIJ, &fd); CHKERRQ(err);
+    err = loadMat("./data/H12.dat", &H12, PETSC_COMM_WORLD, MATMPIAIJ, &fd); CHKERRQ(err);
+    err = loadMat("./data/H21.dat", &H21, PETSC_COMM_WORLD, MATMPIAIJ, &fd); CHKERRQ(err);
+    err = loadVec("./data/order.dat", &order, PETSC_COMM_SELF, &fd); CHKERRQ(err); //all processes must have this vector for ordering the result vector.
+
+    // Check input
+    err = checkMat("invL1", invL1); CHKERRQ(err);
+    err = checkMat("invU1", invU1); CHKERRQ(err);
+    err = checkMat("invL2", invL2); CHKERRQ(err);
+    err = checkMat("invU2", invU2); CHKERRQ(err);
+    err = checkMat("H12", H12); CHKERRQ(err);
+    err = checkMat("H21", H21); CHKERRQ(err);
+    err = checkVec("order", order); CHKERRQ(err);
+
+    // shift -1 for zero-based index
+    err = VecShift(order, -1); CHKERRQ(err);
+    err = VecGetSize(order, &n); CHKERRQ(err);
+
+
+    err = VecCreateSeq(PETSC_COMM_SELF, QN, &seeds); CHKERRQ(err);
+    err = VecSetFromOptions(seeds); CHKERRQ(err); 
+    err = PetscRandomCreate(PETSC_COMM_WORLD, &rand); CHKERRQ(err);
+    err = PetscRandomSetSeed(rand, 100); CHKERRQ(err);
+    err = PetscRandomSetInterval(rand, (PetscScalar) 0, (PetscScalar) n); CHKERRQ(err);
+    err = PetscRandomSetFromOptions(rand); CHKERRQ(err);
+    err = VecSetRandom(seeds, rand); CHKERRQ(err);
+    err = PetscRandomDestroy(&rand); CHKERRQ(err);
+
+    seed = 5; //seed is give by user on one-based index
+    c = 0.05;
+
+    i = 0;
+
+    err = VecDuplicate(order, &r); CHKERRQ(err);
+    for(i = 0; i < QN; i++){
+        err = VecGetValues(seeds, 1, &i, &val);
+        seed = (PetscInt) val;
+        //err = PetscPrintf(PETSC_COMM_SELF, "rank: %d, seed: %d\n", rank, seed);
+        err = PetscTime(&tic); CHKERRQ(err);
+        err = BearQuery(seed, c, invL1, invU1, invL2, invU2, H12, H21, order, r); CHKERRQ(err);
+        err = PetscTime(&toc); CHKERRQ(err);
+        time = toc - tic;
+        err = PetscPrintf(PETSC_COMM_WORLD, "running time: %f sec\n", time); CHKERRQ(err);
+        total_time += time;
+    }
+    err = PetscPrintf(PETSC_COMM_WORLD, "average running time: %f sec\n", total_time/QN); CHKERRQ(err);
+    err = VecDestroy(&r);
+
+
+    /*    err = MatGetSize(H12, &n1, &n2); CHKERRQ(err);
+          n = n1 + n2;
+          err = PetscPrintf(PETSC_COMM_WORLD, "n1: %d, n2: %d\n", n1, n2); CHKERRQ(err);
+
+          err = VecCreateMPI(PETSC_COMM_WORLD, PETSC_DECIDE, n, &r); CHKERRQ(err);
+          err = VecCreateMPI(PETSC_COMM_WORLD, PETSC_DECIDE, n1, &q1); CHKERRQ(err);
+          err = VecCreateMPI(PETSC_COMM_WORLD, PETSC_DECIDE, n2, &q2); CHKERRQ(err);
+          err = VecSet(q1, 0); CHKERRQ(err);
+          err = VecSet(q2, 0); CHKERRQ(err);
+
+          seed = seed - 1; // shift -1 for zero-based index
+          err = VecGetValues(order, 1, &seed, &val); CHKERRQ(err);
+          oseed = (PetscInt) val;
+          err = PetscPrintf(PETSC_COMM_WORLD, "Given seed: %d, Reorered seed: %d (0 ~ n-1)\n", seed, oseed); CHKERRQ(err);
+
+          if(oseed < n1){
+          err = VecSetValues(q1, 1, &oseed, &one, INSERT_VALUES); CHKERRQ(err);
+          }else{
+          oseed = oseed - n1;
+          err = VecSetValues(q2, 1, &oseed, &one, INSERT_VALUES); CHKERRQ(err);
+    //err = printVecSum(q2);
+    }
+    err = VecAssemblyBegin(q1); CHKERRQ(err);
+    err = VecAssemblyBegin(q2); CHKERRQ(err);
+    err = VecAssemblyEnd(q1); CHKERRQ(err);
+    err = VecAssemblyEnd(q2); CHKERRQ(err);
+
+    err = VecDuplicate(q1, &r1); CHKERRQ(err);
+    err = VecDuplicate(q1, &t1_1); CHKERRQ(err);
+    err = VecDuplicate(q1, &t1_2); CHKERRQ(err);
+    err = VecDuplicate(q1, &t1_3); CHKERRQ(err);
+    err = VecDuplicate(q1, &t1_4); CHKERRQ(err);
+    err = VecDuplicate(q1, &t1_5); CHKERRQ(err);
+
+    err = VecDuplicate(q2, &r2); CHKERRQ(err);
+    err = VecDuplicate(q2, &q_tilda); CHKERRQ(err);
+    err = VecDuplicate(q2, &t2_1); CHKERRQ(err);
+    err = VecDuplicate(q2, &t2_2); CHKERRQ(err);
+    err = VecDuplicate(q2, &t2_3); CHKERRQ(err);
+
     // Start matrix-vec multiplications
     err = MatMult(invL1, q1, t1_1); CHKERRQ(err);
     err = MatMult(invU1, t1_1, t1_2); CHKERRQ(err);
@@ -238,10 +364,7 @@ int main(int argc, char** args){
 
     err = VecDuplicate(r, &or); CHKERRQ(err);
     err = VecReorder(r, order, or); CHKERRQ(err);
-    //err = VecView(or, PETSC_VIEWER_STDOUT_WORLD);
-    
-    err = PetscTime(&toc); CHKERRQ(err);
-    err = PetscPrintf(PETSC_COMM_WORLD, "running time: %f sec\n", toc - tic); CHKERRQ(err);
+    //err = VecView(or, PETSC_VIEWER_STDOUT_WORLD);*/
 
     // Destory matrices and vectors
     err = MatDestroy(&invL1); CHKERRQ(err);
@@ -252,23 +375,24 @@ int main(int argc, char** args){
     err = MatDestroy(&H21); CHKERRQ(err);
     err = VecDestroy(&order); CHKERRQ(err);
     err = VecDestroy(&r); CHKERRQ(err);
-    err = VecDestroy(&or); CHKERRQ(err);
+    err = VecDestroy(&seeds); CHKERRQ(err);
+    //err = VecDestroy(&or); CHKERRQ(err);
 
-    err = VecDestroy(&r1); CHKERRQ(err);
-    err = VecDestroy(&q1); CHKERRQ(err);
-    err = VecDestroy(&t1_1); CHKERRQ(err);
-    err = VecDestroy(&t1_2); CHKERRQ(err);
-    err = VecDestroy(&t1_3); CHKERRQ(err);
-    err = VecDestroy(&t1_4); CHKERRQ(err);
-    err = VecDestroy(&t1_5); CHKERRQ(err);
-    
-    err = VecDestroy(&r2); CHKERRQ(err);
-    err = VecDestroy(&q2); CHKERRQ(err);
-    err = VecDestroy(&q_tilda); CHKERRQ(err);
-    err = VecDestroy(&t2_1); CHKERRQ(err);
-    err = VecDestroy(&t2_2); CHKERRQ(err);
-    err = VecDestroy(&t2_3); CHKERRQ(err);
-    
+    /*    err = VecDestroy(&r1); CHKERRQ(err);
+          err = VecDestroy(&q1); CHKERRQ(err);
+          err = VecDestroy(&t1_1); CHKERRQ(err);
+          err = VecDestroy(&t1_2); CHKERRQ(err);
+          err = VecDestroy(&t1_3); CHKERRQ(err);
+          err = VecDestroy(&t1_4); CHKERRQ(err);
+          err = VecDestroy(&t1_5); CHKERRQ(err);
+
+          err = VecDestroy(&r2); CHKERRQ(err);
+          err = VecDestroy(&q2); CHKERRQ(err);
+          err = VecDestroy(&q_tilda); CHKERRQ(err);
+          err = VecDestroy(&t2_1); CHKERRQ(err);
+          err = VecDestroy(&t2_2); CHKERRQ(err);
+          err = VecDestroy(&t2_3); CHKERRQ(err);*/
+
     // Finalize
     err = PetscFinalize(); CHKERRQ(err);
     return 0;
