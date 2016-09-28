@@ -6,3 +6,7 @@ query: query.o chkopts
 	${RM} query.o
 	mpiexec -np 2 ./query
 
+lu: lu.o chkopts
+	-${CLINKER} -o lu lu.o ${PETSC_LIB} ${PETSC_MAT_LIB} ${PETSC_KSP_LIB}
+	${RM} lu.o
+	mpiexec -np 1 ./lu
